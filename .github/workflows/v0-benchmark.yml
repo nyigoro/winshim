@@ -166,7 +166,9 @@ jobs:
         id: manifest_probe
         shell: pwsh
         run: |
-          ./scripts/benchmark/manifest-probe.ps1 -Image "${{ env.NANO_IMAGE }}"
+          ./scripts/benchmark/manifest-probe.ps1 `
+            -Image "${{ env.NANO_IMAGE }}" `
+            -ProbeRootPath "${{ github.workspace }}"
 
       - name: Locate host .NET root
         id: host_dotnet

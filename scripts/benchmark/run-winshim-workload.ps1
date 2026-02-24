@@ -35,13 +35,49 @@ if ($StrategyMode -notin $STRATEGY_ALL) {
   exit 1
 }
 
+# Fail before container launch if the expected project is absent on host.
+$projectRelativePath = $ProjectPath -replace "/", "\"
+$hostProjectPath = Join-Path $WorkspacePath $projectRelativePath
+if (-not (Test-Path $hostProjectPath)) {
+  Write-Host "::error::Host project file not found: $hostProjectPath"
+  Write-Host "::error::Workspace path: $WorkspacePath"
+  if (Test-Path $WorkspacePath) {
+    Write-Host "Workspace listing:"
+    Get-ChildItem -Path $WorkspacePath | Select-Object -First 30 | ForEach-Object { " - $($_.Name)" } | Write-Host
+  }
+  exit 2
+}
+
 # Precondition: input paths must be absolute Windows drive-letter paths.
 # Convert-ToDockerSourcePath throws loudly if this precondition is violated.
 $sdkMountSource = Convert-ToDockerSourcePath -WindowsPath $DotnetRoot -Strategy $StrategyMode
 $workspaceMountSource = Convert-ToDockerSourcePath -WindowsPath $WorkspacePath -Strategy $StrategyMode
-$projectPathInContainer = "C:\workspace\" + ($ProjectPath -replace "/", "\")
+$projectPathInContainer = "C:\workspace\" + $projectRelativePath
+Write-Host "Host workspace mount source: $workspaceMountSource"
+Write-Host "Host SDK mount source: $sdkMountSource"
+Write-Host "Container project path: $projectPathInContainer"
 
-$buildCmd = "if not exist `"$projectPathInContainer`" (echo Missing project file: $projectPathInContainer & exit /b 3) && C:\hostdotnet\dotnet.exe build `"$projectPathInContainer`" -c Release"
+$preflightCmd = "if exist `"$projectPathInContainer`" (echo project-present: $projectPathInContainer) else (echo project-missing: $projectPathInContainer & echo workspace-listing: & dir C:\workspace & if exist C:\workspace\benchmark-app (echo benchmark-app-listing: & dir C:\workspace\benchmark-app) & exit /b 3)"
+
+docker run --rm `
+  --isolation=$isolation `
+  --cpus $Cpu `
+  --memory $Memory `
+  -v "${sdkMountSource}:C:\hostdotnet:ro" `
+  -v "${workspaceMountSource}:C:\workspace" `
+  -w C:\workspace `
+  -e "DOTNET_ROOT=C:\hostdotnet" `
+  -e "PATH=C:\hostdotnet;C:\Windows\System32;C:\Windows" `
+  $Image `
+  cmd /c $preflightCmd
+
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "::error::Workspace bind-mount preflight failed. Project not visible inside container."
+  Write-Host "::error::Check detected mount strategy and host path translation."
+  exit $LASTEXITCODE
+}
+
+$buildCmd = "C:\hostdotnet\dotnet.exe build `"$projectRelativePath`" -c Release"
 
 docker run --rm `
   --isolation=$isolation `

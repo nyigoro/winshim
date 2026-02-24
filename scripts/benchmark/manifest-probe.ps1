@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$Image
+  [string]$Image,
+  [string]$ProbeRootPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -8,9 +9,9 @@ Set-StrictMode -Version Latest
 . "$PSScriptRoot/strategy-constants.ps1"
 . "$PSScriptRoot/common.ps1"
 
-$tempRoot = Get-RunnerTempPath
+$basePath = if (-not [string]::IsNullOrWhiteSpace($ProbeRootPath)) { $ProbeRootPath } else { Get-RunnerTempPath }
 $isolation = Get-WinShimIsolationMode
-$probeRoot = Join-Path $tempRoot "winshim-canary-$([guid]::NewGuid().ToString('N'))"
+$probeRoot = Join-Path $basePath ".winshim-canary-$([guid]::NewGuid().ToString('N'))"
 $probeInput = Join-Path $probeRoot "probe.in"
 $probeOutput = Join-Path $probeRoot "probe.out"
 
@@ -20,6 +21,7 @@ Write-Host "Manifest probe isolation mode: $isolation"
 
 $strategies = $STRATEGY_ALL
 $errors = New-Object System.Collections.Generic.List[string]
+$selectedStrategy = $null
 
 foreach ($strategy in $strategies) {
   if ($strategy -notin $STRATEGY_ALL) {
@@ -54,13 +56,22 @@ foreach ($strategy in $strategies) {
       throw "probe output content mismatch"
     }
 
-    $label = Get-StrategyLabel -Strategy $strategy
-    Write-GhaOutput -Name "strategy_mode" -Value $strategy
-    Write-Host "Detected working mount strategy: $label"
-    exit 0
+    $selectedStrategy = $strategy
+    break
   } catch {
     $errors.Add("$strategy failed: $($_.Exception.Message)")
   }
+}
+
+if (Test-Path $probeRoot) {
+  Remove-Item -Path $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($null -ne $selectedStrategy) {
+  $label = Get-StrategyLabel -Strategy $selectedStrategy
+  Write-GhaOutput -Name "strategy_mode" -Value $selectedStrategy
+  Write-Host "Detected working mount strategy: $label"
+  exit 0
 }
 
 Write-Host "::error::Manifest validator failed. No working volume escaping strategy detected."
