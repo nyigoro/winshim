@@ -57,7 +57,7 @@ Write-Host "Host workspace mount source: $workspaceMountSource"
 Write-Host "Host SDK mount source: $sdkMountSource"
 Write-Host "Container project path: $projectPathInContainer"
 
-$preflightCmd = "if exist `"$projectRelativePath`" (echo project-present: $projectRelativePath) else (echo project-missing: $projectRelativePath & echo workspace-listing: & dir C:\workspace & if exist C:\workspace\benchmark-app (echo benchmark-app-listing: & dir C:\workspace\benchmark-app) & exit /b 3)"
+$preflightCheckCmd = "dir /b `"$projectPathInContainer`" >nul"
 
 docker run --rm `
   --isolation=$isolation `
@@ -69,12 +69,26 @@ docker run --rm `
   -e "DOTNET_ROOT=C:\hostdotnet" `
   -e "PATH=C:\hostdotnet;C:\Windows\System32;C:\Windows" `
   $Image `
-  cmd /c $preflightCmd
+  cmd /c $preflightCheckCmd
 
 if ($LASTEXITCODE -ne 0) {
+  $preflightDiagCmd = "echo project-missing: $projectPathInContainer & echo workspace-listing: & dir C:\workspace & if exist C:\workspace\benchmark-app (echo benchmark-app-listing: & dir C:\workspace\benchmark-app)"
+
+  docker run --rm `
+    --isolation=$isolation `
+    --cpus $Cpu `
+    --memory $Memory `
+    -v "${sdkMountSource}:C:\hostdotnet:ro" `
+    -v "${workspaceMountSource}:C:\workspace" `
+    -w C:\workspace `
+    -e "DOTNET_ROOT=C:\hostdotnet" `
+    -e "PATH=C:\hostdotnet;C:\Windows\System32;C:\Windows" `
+    $Image `
+    cmd /c $preflightDiagCmd
+
   Write-Host "::error::Workspace bind-mount preflight failed. Project not visible inside container."
   Write-Host "::error::Check detected mount strategy and host path translation."
-  exit $LASTEXITCODE
+  exit 3
 }
 
 $buildCmd = "C:\hostdotnet\dotnet.exe build `"$projectRelativePath`" -c Release"
