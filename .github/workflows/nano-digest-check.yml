@@ -1,0 +1,127 @@
+name: Nano Server Digest Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 1 * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve pinned and current digests
+        id: digest
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          workflow_path = ".github/workflows/v0-benchmark.yml"
+          text = open(workflow_path, "r", encoding="utf-8").read()
+          match = re.search(r'^\s*NANO_IMAGE:\s*"?(?P<image>[^"\n]+)"?\s*$', text, re.MULTILINE)
+          if not match:
+              raise SystemExit(f"::error::Could not find NANO_IMAGE in {workflow_path}")
+
+          pinned_image = match.group("image").strip()
+          if "@sha256:" not in pinned_image:
+              raise SystemExit("::error::NANO_IMAGE is not digest-pinned. Update v0-benchmark.yml.")
+          pinned_digest = pinned_image.split("@", 1)[1]
+
+          req = urllib.request.Request(
+              "https://mcr.microsoft.com/v2/windows/nanoserver/manifests/ltsc2022",
+              headers={"Accept": "application/vnd.docker.distribution.manifest.list.v2+json"},
+          )
+          with urllib.request.urlopen(req) as resp:
+              payload = resp.read().decode("utf-8")
+          manifest_list = json.loads(payload)
+
+          amd64_manifest = None
+          for manifest in manifest_list.get("manifests", []):
+              platform = manifest.get("platform", {})
+              if platform.get("os") == "windows" and platform.get("architecture") == "amd64":
+                  amd64_manifest = manifest
+                  break
+
+          if not amd64_manifest or not amd64_manifest.get("digest"):
+              raise SystemExit("::error::Could not resolve current ltsc2022 amd64 digest from MCR.")
+
+          current_digest = amd64_manifest["digest"].strip()
+          changed = str(pinned_digest != current_digest).lower()
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"pinned_image={pinned_image}\n")
+              fh.write(f"pinned_digest={pinned_digest}\n")
+              fh.write(f"current_digest={current_digest}\n")
+              fh.write(f"changed={changed}\n")
+          PY
+
+      - name: Print digest comparison
+        shell: bash
+        run: |
+          echo "Pinned image:  ${{ steps.digest.outputs.pinned_image }}"
+          echo "Pinned digest: ${{ steps.digest.outputs.pinned_digest }}"
+          echo "Current digest:${{ steps.digest.outputs.current_digest }}"
+
+      - name: Open issue when digest changes
+        if: steps.digest.outputs.changed == 'true'
+        uses: actions/github-script@v7
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.pinned_image }}
+          PINNED_DIGEST: ${{ steps.digest.outputs.pinned_digest }}
+          CURRENT_DIGEST: ${{ steps.digest.outputs.current_digest }}
+        with:
+          script: |
+            const title = 'Nano Server ltsc2022 digest changed';
+            const marker = `current-digest:${process.env.CURRENT_DIGEST}`;
+            const body = [
+              'Detected digest drift for `mcr.microsoft.com/windows/nanoserver:ltsc2022`.',
+              '',
+              `- Pinned image: \`${process.env.PINNED_IMAGE}\``,
+              `- Pinned digest: \`${process.env.PINNED_DIGEST}\``,
+              `- Current digest: \`${process.env.CURRENT_DIGEST}\``,
+              '',
+              'Action: update `NANO_IMAGE` and `CACHE_KEY_BASE` in `.github/workflows/v0-benchmark.yml` and republish benchmark metadata in `BENCHMARKS.md`.',
+              '',
+              marker
+            ].join('\n');
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'digest-watch',
+              per_page: 100
+            });
+
+            const duplicate = existing.find(
+              (issue) => issue.title === title && issue.body && issue.body.includes(marker)
+            );
+
+            if (duplicate) {
+              core.info(`Digest drift issue already open: #${duplicate.number}`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['digest-watch', 'maintenance']
+            });
+
+            core.info(`Opened digest drift issue #${created.data.number}`);
+
+      - name: Confirm no drift
+        if: steps.digest.outputs.changed != 'true'
+        run: echo "Digest unchanged."
