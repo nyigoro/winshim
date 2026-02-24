@@ -57,7 +57,7 @@ Write-Host "Host workspace mount source: $workspaceMountSource"
 Write-Host "Host SDK mount source: $sdkMountSource"
 Write-Host "Container project path: $projectPathInContainer"
 
-$preflightCheckCmd = "dir /b `"$projectPathInContainer`" >nul"
+$preflightCheckCmd = "dir /b $projectPathInContainer >nul"
 
 docker run --rm `
   --isolation=$isolation `
