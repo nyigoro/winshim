@@ -57,7 +57,7 @@ Write-Host "Host workspace mount source: $workspaceMountSource"
 Write-Host "Host SDK mount source: $sdkMountSource"
 Write-Host "Container project path: $projectPathInContainer"
 
-$preflightCmd = "if exist `"$projectPathInContainer`" (echo project-present: $projectPathInContainer) else (echo project-missing: $projectPathInContainer & echo workspace-listing: & dir C:\workspace & if exist C:\workspace\benchmark-app (echo benchmark-app-listing: & dir C:\workspace\benchmark-app) & exit /b 3)"
+$preflightCmd = "if exist `"$projectRelativePath`" (echo project-present: $projectRelativePath) else (echo project-missing: $projectRelativePath & echo workspace-listing: & dir C:\workspace & if exist C:\workspace\benchmark-app (echo benchmark-app-listing: & dir C:\workspace\benchmark-app) & exit /b 3)"
 
 docker run --rm `
   --isolation=$isolation `
