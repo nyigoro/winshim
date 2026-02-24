@@ -16,10 +16,18 @@ STRATEGY_LABELS = {
 
 def load_rows(artifact_root: pathlib.Path, prefix: str) -> List[Dict]:
     rows: List[Dict] = []
-    pattern = f"{prefix}-timing-*/timing.json"
+    pattern = f"{prefix}-timing-*/*.json"
     for path in sorted(artifact_root.glob(pattern)):
         try:
-            rows.append(json.loads(path.read_text(encoding="utf-8")))
+            row = json.loads(path.read_text(encoding="utf-8"))
+            scenario = row.get("scenario")
+            if scenario not in (None, prefix):
+                print(
+                    f"warning: skipping {path}: scenario '{scenario}' does not match '{prefix}'",
+                    file=sys.stderr,
+                )
+                continue
+            rows.append(row)
         except Exception as exc:  # pragma: no cover
             print(f"warning: failed to parse {path}: {exc}", file=sys.stderr)
     rows.sort(key=lambda row: row.get("run_index", 0))
