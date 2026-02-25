@@ -39,13 +39,13 @@ foreach ($strategy in $strategies) {
     }
 
     $mountSource = Convert-ToDockerSourcePath -WindowsPath $probeRoot -Strategy $strategy
-    $containerCmd = "if (Test-Path 'C:\probe\probe.in') { Get-Content -Path 'C:\probe\probe.in' -Raw | Set-Content -Path 'C:\probe\probe.out' -Encoding ASCII; exit 0 } else { exit 4 }"
+    $containerCmd = "type C:\probe\probe.in > C:\probe\probe.out"
 
     docker run --rm `
       --isolation=$isolation `
       -v "${mountSource}:C:\probe" `
       $Image `
-      powershell -NoLogo -NoProfile -Command $containerCmd
+      cmd /c $containerCmd
 
     if ($LASTEXITCODE -ne 0) {
       throw "docker run exited with code $LASTEXITCODE"

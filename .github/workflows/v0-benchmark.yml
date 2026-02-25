@@ -46,6 +46,29 @@ jobs:
           $start = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           "start_ms=$start" >> $env:GITHUB_OUTPUT
 
+      - name: Ensure Docker daemon is ready
+        shell: pwsh
+        run: |
+          $service = Get-Service -Name docker -ErrorAction Stop
+          if ($service.Status -ne "Running") {
+            Write-Host "Docker service status: $($service.Status). Starting service."
+            Start-Service docker
+          }
+
+          $ready = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            docker version 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $ready = $true
+              break
+            }
+            Start-Sleep -Seconds 5
+          }
+
+          if (-not $ready) {
+            throw "Docker daemon is unavailable on this runner."
+          }
+
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
