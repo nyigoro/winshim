@@ -44,3 +44,24 @@ If Hyper-V isolation still fails with host/image compatibility errors, use a Win
 - Publish output in `BENCHMARKS.md`
 
 Only GitHub-hosted runs are authoritative for benchmark performance numbers.
+
+## Self-Hosted Runner Setup (Windows Server 2022)
+
+Use `scripts/selfhosted/setup-selfhosted-runner.ps1` on the VM to provision Docker preflight, pinned image preload, and runner service registration.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\scripts\selfhosted\setup-selfhosted-runner.ps1 `
+  -RepoUrl "https://github.com/nyigoro/winshim" `
+  -RunnerRoot "C:\actions-runner" `
+  -RunnerLabels "self-hosted,windows,x64" `
+  -RunnerToken "<repo-runner-registration-token>"
+```
+
+Notes:
+
+- Use the exact pinned image from the workflow:
+  - `mcr.microsoft.com/windows/nanoserver@sha256:42f7526e855caf911bef2e05a3eb497497e4a6d431a37b216d7b345d5eee80c6`
+- If Docker is currently in Linux mode, pass `-SwitchWindowsEngine`.
+- If you only want Docker/image preflight and not runner registration yet, pass `-SkipRunnerRegistration`.
+- After completion, confirm the runner appears as idle in GitHub `Settings -> Actions -> Runners`.
