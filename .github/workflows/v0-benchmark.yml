@@ -109,6 +109,7 @@ jobs:
     outputs:
       tar_artifact_name: ${{ steps.artifact_meta.outputs.artifact_name }}
       image_digest: ${{ steps.verify.outputs.digest }}
+      image_id: ${{ steps.verify.outputs.image_id }}
       load_source: ${{ steps.image_load.outputs.load_source }}
       load_duration_s: ${{ steps.image_load.outputs.image_load_s }}
       prep_total_s: ${{ steps.prep_total.outputs.prep_total_s }}
@@ -205,8 +206,15 @@ jobs:
           }
 
           $digest = $repoDigest.Split("@")[1]
+          $imageId = docker inspect --format "{{.Id}}" "${{ env.NANO_IMAGE }}"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($imageId)) {
+            throw "Unable to inspect image ID for $env:NANO_IMAGE"
+          }
+
           "digest=$digest" >> $env:GITHUB_OUTPUT
+          "image_id=$imageId" >> $env:GITHUB_OUTPUT
           Write-Host "Verified image digest: $digest"
+          Write-Host "Verified image ID: $imageId"
 
       - name: Export image to tar
         id: export
@@ -316,33 +324,52 @@ jobs:
           }
 
           $startMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-          docker load -i $tarPath
+          $loadOutput = docker load -i $tarPath 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "docker load failed from artifact: $tarPath"
+            throw "docker load failed from artifact: $tarPath`n$($loadOutput -join \"`n\")"
           }
           $endMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
           $loadS = [math]::Round(($endMs - $startMs) / 1000, 2)
           $loadText = $loadS.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
+          $loadedImageId = ""
+          foreach ($line in $loadOutput) {
+            if ($line -match "Loaded image ID:\\s*(sha256:[0-9a-fA-F]+)") {
+              $loadedImageId = $matches[1]
+              break
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($loadedImageId)) {
+            throw "Unable to parse loaded image ID from docker load output.`n$($loadOutput -join \"`n\")"
+          }
+
           "artifact_load_s=$loadText" >> $env:GITHUB_OUTPUT
+          "loaded_image_id=$loadedImageId" >> $env:GITHUB_OUTPUT
+          $loadOutput | ForEach-Object { Write-Host $_ }
           Write-Host "Artifact image load seconds: $loadText"
+          Write-Host "Loaded image ID from artifact: $loadedImageId"
 
       - name: Verify loaded image digest
         shell: pwsh
         run: |
-          $loadedRepoDigest = docker inspect --format "{{index .RepoDigests 0}}" "${{ env.NANO_IMAGE }}"
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($loadedRepoDigest)) {
-            throw "Unable to inspect loaded image digest for $env:NANO_IMAGE"
+          $expectedImageId = "${{ needs.winshim_setup.outputs.image_id }}"
+          $loadedImageId = "${{ steps.artifact_load.outputs.loaded_image_id }}"
+          if ($loadedImageId -ne $expectedImageId) {
+            throw "Image ID mismatch after artifact load. Expected: $expectedImageId Got: $loadedImageId"
           }
 
-          if ($loadedRepoDigest -notmatch "@") {
-            throw "Unexpected RepoDigest format after artifact load: $loadedRepoDigest"
-          }
-
-          $loadedDigest = $loadedRepoDigest.Split("@")[1]
           $expectedDigest = "${{ needs.winshim_setup.outputs.image_digest }}"
-          if ($loadedDigest -ne $expectedDigest) {
-            throw "Digest mismatch after artifact load. Expected: $expectedDigest Got: $loadedDigest"
+          $loadedRepoDigest = docker inspect --format "{{index .RepoDigests 0}}" $loadedImageId 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($loadedRepoDigest) -and $loadedRepoDigest -match "@") {
+            $loadedDigest = $loadedRepoDigest.Split("@")[1]
+            if ($loadedDigest -ne $expectedDigest) {
+              throw "Digest mismatch after artifact load. Expected: $expectedDigest Got: $loadedDigest"
+            }
+
+            Write-Host "Verified digest match after artifact load: $loadedDigest"
+          } else {
+            Write-Host "RepoDigest unavailable after artifact load; validated by image ID."
           }
 
       - name: Manifest validator canary
