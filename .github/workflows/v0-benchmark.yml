@@ -102,10 +102,65 @@ jobs:
           path: ${{ steps.write_timing.outputs.timing_path }}
           if-no-files-found: error
 
+  persistence_probe:
+    name: Persistence Probe
+    runs-on: windows-latest
+    outputs:
+      hit: ${{ steps.probe.outputs.hit }}
+      image_id: ${{ steps.probe.outputs.image_id }}
+      probe_seconds: ${{ steps.probe.outputs.probe_seconds }}
+
+    steps:
+      - name: Ensure Docker daemon is ready
+        shell: pwsh
+        run: |
+          $service = Get-Service -Name docker -ErrorAction Stop
+          if ($service.Status -ne "Running") {
+            Write-Host "Docker service status: $($service.Status). Starting service."
+            Start-Service docker
+          }
+
+          $ready = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            docker version 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $ready = $true
+              break
+            }
+            Start-Sleep -Seconds 5
+          }
+
+          if (-not $ready) {
+            throw "Docker daemon is unavailable on this runner."
+          }
+
+      - name: Probe for persistent daemon layers
+        id: probe
+        shell: pwsh
+        run: |
+          $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+          $existing = docker images -q "winshim-nano:preload" 2>$null
+          $stopwatch.Stop()
+
+          $probeSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
+          $probeText = $probeSeconds.ToString("0.000", [System.Globalization.CultureInfo]::InvariantCulture)
+
+          if ([string]::IsNullOrWhiteSpace($existing)) {
+            "hit=false" >> $env:GITHUB_OUTPUT
+            "image_id=" >> $env:GITHUB_OUTPUT
+            Write-Host "Persistence probe: MISS - clean daemon (${probeText}s query)."
+          } else {
+            "hit=true" >> $env:GITHUB_OUTPUT
+            "image_id=$existing" >> $env:GITHUB_OUTPUT
+            Write-Host "Persistence probe: HIT - image already present ($existing) (${probeText}s query)."
+          }
+
+          "probe_seconds=$probeText" >> $env:GITHUB_OUTPUT
+
   winshim_setup:
     name: WinShim Setup
     runs-on: windows-latest
-    needs: baseline
+    needs: [baseline, persistence_probe]
     outputs:
       tar_artifact_name: ${{ steps.artifact_meta.outputs.artifact_name }}
       image_digest: ${{ steps.load.outputs.image_digest }}
@@ -152,38 +207,47 @@ jobs:
         id: load
         shell: pwsh
         run: |
-          $loadStartMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-          docker pull $env:NANO_IMAGE
-          if ($LASTEXITCODE -ne 0) {
-            throw "docker pull failed for image: $env:NANO_IMAGE"
-          }
-          $loadEndMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          Write-Host "Cross-run probe result: hit=${{ needs.persistence_probe.outputs.hit }}, image_id='${{ needs.persistence_probe.outputs.image_id }}', probe_seconds=${{ needs.persistence_probe.outputs.probe_seconds }}"
 
-          docker tag $env:NANO_IMAGE "winshim-nano:preload"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to tag image as winshim-nano:preload"
-          }
+          $targetTag = "winshim-nano:preload"
+          $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+          $imageId = docker images -q $targetTag 2>$null
+          $loadSource = "daemon-persistence"
 
-          $imageId = docker images -q "winshim-nano:preload"
           if ([string]::IsNullOrWhiteSpace($imageId)) {
-            throw "Image not found in daemon after pull and tag. Pull may have failed silently."
+            docker pull $env:NANO_IMAGE
+            if ($LASTEXITCODE -ne 0) {
+              throw "docker pull failed for image: $env:NANO_IMAGE"
+            }
+
+            docker tag $env:NANO_IMAGE $targetTag
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to tag image as $targetTag"
+            }
+
+            $imageId = docker images -q $targetTag
+            if ([string]::IsNullOrWhiteSpace($imageId)) {
+              throw "Image not found in daemon after pull and tag. Pull may have failed silently."
+            }
+            $loadSource = "registry"
           }
+          $stopwatch.Stop()
 
           $imageDigest = ""
           if ($env:NANO_IMAGE -match "@") {
             $imageDigest = $env:NANO_IMAGE.Split("@")[1]
           }
 
-          $loadS = [math]::Round(($loadEndMs - $loadStartMs) / 1000, 2)
+          $loadS = [math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
           $loadText = $loadS.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
 
           "image_id=$imageId" >> $env:GITHUB_OUTPUT
-          "image_tag=winshim-nano:preload" >> $env:GITHUB_OUTPUT
+          "image_tag=$targetTag" >> $env:GITHUB_OUTPUT
           "image_digest=$imageDigest" >> $env:GITHUB_OUTPUT
-          "load_source=registry" >> $env:GITHUB_OUTPUT
+          "load_source=$loadSource" >> $env:GITHUB_OUTPUT
           "image_load_s=$loadText" >> $env:GITHUB_OUTPUT
-          Write-Host "Identity captured: winshim-nano:preload ($imageId)"
-          Write-Host "Image source: registry, load time: ${loadText}s"
+          Write-Host "Identity captured: $targetTag ($imageId)"
+          Write-Host "Image source: $loadSource, load time: ${loadText}s"
 
       - name: Smoke test image
         shell: pwsh
@@ -285,14 +349,40 @@ jobs:
           $start = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           "start_ms=$start" >> $env:GITHUB_OUTPUT
 
+      - name: Probe matrix daemon persistence
+        id: probe_local
+        shell: pwsh
+        run: |
+          $targetTag = "winshim-nano:preload"
+          $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+          $existing = docker images -q $targetTag 2>$null
+          $stopwatch.Stop()
+
+          $probeSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
+          $probeText = $probeSeconds.ToString("0.000", [System.Globalization.CultureInfo]::InvariantCulture)
+
+          if ([string]::IsNullOrWhiteSpace($existing)) {
+            "hit=false" >> $env:GITHUB_OUTPUT
+            "image_id=" >> $env:GITHUB_OUTPUT
+            Write-Host "Persistence probe: MISS - matrix runner daemon is clean (${probeText}s query)."
+          } else {
+            "hit=true" >> $env:GITHUB_OUTPUT
+            "image_id=$existing" >> $env:GITHUB_OUTPUT
+            Write-Host "Persistence probe: HIT - matrix runner already has $targetTag ($existing) (${probeText}s query)."
+          }
+
+          "probe_seconds=$probeText" >> $env:GITHUB_OUTPUT
+
       - name: Download preload artifact
+        if: ${{ steps.probe_local.outputs.hit != 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.winshim_setup.outputs.tar_artifact_name }}
           path: ${{ runner.temp }}
 
-      - name: Load image from artifact
-        id: artifact_load
+      - name: Load image from artifact on miss
+        id: artifact_load_miss
+        if: ${{ steps.probe_local.outputs.hit != 'true' }}
         shell: pwsh
         run: |
           $tarPath = Join-Path $env:RUNNER_TEMP "nano-preload.tar"
@@ -309,9 +399,30 @@ jobs:
 
           $loadS = [math]::Round(($endMs - $startMs) / 1000, 2)
           $loadText = $loadS.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
-          "artifact_load_s=$loadText" >> $env:GITHUB_OUTPUT
+          "load_seconds=$loadText" >> $env:GITHUB_OUTPUT
           $loadOutput | ForEach-Object { Write-Host $_ }
           Write-Host "Artifact image load seconds: $loadText"
+
+      - name: Finalize load method metrics
+        id: load_metrics
+        shell: pwsh
+        run: |
+          $probeHit = "${{ steps.probe_local.outputs.hit }}" -eq "true"
+          if ($probeHit) {
+            $loadMethod = "daemon-persistence"
+            $loadSeconds = "${{ steps.probe_local.outputs.probe_seconds }}"
+          } else {
+            $loadMethod = "artifact-load"
+            $loadSeconds = "${{ steps.artifact_load_miss.outputs.load_seconds }}"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($loadSeconds)) {
+            $loadSeconds = "0.00"
+          }
+
+          "load_method=$loadMethod" >> $env:GITHUB_OUTPUT
+          "artifact_load_s=$loadSeconds" >> $env:GITHUB_OUTPUT
+          Write-Host "Load method: $loadMethod | Load seconds: $loadSeconds"
 
       - name: Verify loaded image identity
         id: verify_loaded
@@ -393,9 +504,10 @@ jobs:
             -BootSeconds "${{ steps.metrics.outputs.boot_s }}" `
             -BuildSeconds "${{ steps.metrics.outputs.build_s }}" `
             -ImageLoadSeconds "${{ needs.winshim_setup.outputs.load_duration_s }}" `
-            -ArtifactLoadSeconds "${{ steps.artifact_load.outputs.artifact_load_s }}" `
+            -ArtifactLoadSeconds "${{ steps.load_metrics.outputs.artifact_load_s }}" `
             -SharedSetupSeconds "${{ needs.winshim_setup.outputs.prep_total_s }}" `
             -LoadSource "${{ needs.winshim_setup.outputs.load_source }}" `
+            -LoadMethod "${{ steps.load_metrics.outputs.load_method }}" `
             -VolumeStrategy "${{ steps.manifest_probe.outputs.strategy_mode }}" `
             -OutputPath "$env:RUNNER_TEMP\winshim-timing.json"
 
@@ -411,7 +523,7 @@ jobs:
   summary:
     name: Benchmark Summary
     runs-on: ubuntu-latest
-    needs: [baseline, winshim_setup, winshim_matrix]
+    needs: [baseline, persistence_probe, winshim_setup, winshim_matrix]
     if: always()
 
     steps:

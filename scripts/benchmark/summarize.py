@@ -123,6 +123,13 @@ def render_report(
     winshim_build = stats(numeric_values(filtered_winshim_rows, "build_only_s"))
     winshim_image_load = stats(numeric_values(filtered_winshim_rows, "image_load_s"))
     winshim_artifact_load = stats(numeric_values(filtered_winshim_rows, "artifact_load_s"))
+    load_method_counts: Dict[str, int] = {}
+    for row in filtered_winshim_rows:
+        load_method = row.get("load_method")
+        if load_method in (None, ""):
+            load_method = "unspecified"
+        load_method_str = str(load_method)
+        load_method_counts[load_method_str] = load_method_counts.get(load_method_str, 0) + 1
 
     shared_setup_values = numeric_values(filtered_winshim_rows, "shared_setup_s")
     shared_setup = shared_setup_override
@@ -223,6 +230,19 @@ def render_report(
     lines.append(
         f"| {fmt(winshim_artifact_load['mean'])} | {fmt(winshim_artifact_load['median'])} | {fmt(winshim_artifact_load['stddev'])} | {fmt(winshim_artifact_load['min'])} | {fmt(winshim_artifact_load['max'])} |"
     )
+    lines.append("")
+    lines.append("### Load Method Breakdown (WinShim Per-Leg)")
+    lines.append("")
+    lines.append("| Load method | Count | Share |")
+    lines.append("|---|---:|---:|")
+    total_methods = sum(load_method_counts.values())
+    if total_methods == 0:
+        lines.append("| N/A | 0 | 0.0% |")
+    else:
+        for method_name in sorted(load_method_counts):
+            count = load_method_counts[method_name]
+            share = (count / total_methods) * 100.0
+            lines.append(f"| {method_name} | {count} | {share:.1f}% |")
 
     if warnings:
         lines.append("")

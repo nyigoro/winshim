@@ -18,6 +18,7 @@ param(
   [string]$ArtifactLoadSeconds = "",
   [string]$SharedSetupSeconds = "",
   [string]$LoadSource = "",
+  [string]$LoadMethod = "",
   [string]$CacheIntegrityReason = "",
   [string]$VolumeStrategy = "",
   [string]$OutputPath = "$env:RUNNER_TEMP\timing.json"
@@ -74,6 +75,10 @@ if ($null -ne $sharedSetup) {
 
 if (-not [string]::IsNullOrWhiteSpace($LoadSource)) {
   $payload["load_source"] = $LoadSource
+}
+
+if (-not [string]::IsNullOrWhiteSpace($LoadMethod)) {
+  $payload["load_method"] = $LoadMethod
 }
 
 if (-not [string]::IsNullOrWhiteSpace($CacheIntegrityReason)) {
