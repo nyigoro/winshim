@@ -537,6 +537,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Download timing artifacts
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -548,15 +553,7 @@ jobs:
       - name: Generate benchmark summary
         shell: pwsh
         run: |
-          $python = Get-Command python -ErrorAction SilentlyContinue
-          if (-not $python) {
-            $python = Get-Command python3 -ErrorAction SilentlyContinue
-          }
-          if (-not $python) {
-            throw "Python runtime not found on runner."
-          }
-
-          & $python.Source scripts/benchmark/summarize.py `
+          python scripts/benchmark/summarize.py `
             --artifacts ./timing-artifacts `
             --summary-file "$env:GITHUB_STEP_SUMMARY" `
             --expected-samples 5 `
