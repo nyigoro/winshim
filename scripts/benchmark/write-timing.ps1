@@ -15,6 +15,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$BuildSeconds,
   [string]$ImageLoadSeconds = "",
+  [string]$ArtifactLoadSeconds = "",
+  [string]$SharedSetupSeconds = "",
   [string]$LoadSource = "",
   [string]$CacheIntegrityReason = "",
   [string]$VolumeStrategy = "",
@@ -36,6 +38,8 @@ $build = Parse-Number -Value $BuildSeconds
 $setup = Parse-Number -Value $SetupSeconds
 $boot = Parse-Number -Value $BootSeconds
 $imageLoad = Parse-Number -Value $ImageLoadSeconds
+$artifactLoad = Parse-Number -Value $ArtifactLoadSeconds
+$sharedSetup = Parse-Number -Value $SharedSetupSeconds
 
 $payload = [ordered]@{
   scenario = $Scenario
@@ -58,6 +62,14 @@ if ($null -ne $boot) {
 
 if ($null -ne $imageLoad) {
   $payload["image_load_s"] = $imageLoad
+}
+
+if ($null -ne $artifactLoad) {
+  $payload["artifact_load_s"] = $artifactLoad
+}
+
+if ($null -ne $sharedSetup) {
+  $payload["shared_setup_s"] = $sharedSetup
 }
 
 if (-not [string]::IsNullOrWhiteSpace($LoadSource)) {

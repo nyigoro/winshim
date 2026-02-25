@@ -71,10 +71,23 @@ def first_field(field: str, *rows_lists: List[Dict]) -> str:
     return "unknown"
 
 
+def parse_optional_float(text: str) -> Optional[float]:
+    if text is None:
+        return None
+    stripped = text.strip()
+    if stripped == "":
+        return None
+    try:
+        return float(stripped)
+    except ValueError:
+        return None
+
+
 def render_report(
     baseline_rows: List[Dict],
     winshim_rows: List[Dict],
     expected_samples: int,
+    shared_setup_override: Optional[float] = None,
 ) -> str:
     cache_state = first_field("cache_state", winshim_rows, baseline_rows)
     run_label = first_field("run_label", winshim_rows, baseline_rows)
@@ -109,6 +122,15 @@ def render_report(
     winshim_boot = stats(numeric_values(filtered_winshim_rows, "boot_s"))
     winshim_build = stats(numeric_values(filtered_winshim_rows, "build_only_s"))
     winshim_image_load = stats(numeric_values(filtered_winshim_rows, "image_load_s"))
+    winshim_artifact_load = stats(numeric_values(filtered_winshim_rows, "artifact_load_s"))
+
+    shared_setup_values = numeric_values(filtered_winshim_rows, "shared_setup_s")
+    shared_setup = shared_setup_override
+    if shared_setup is None and shared_setup_values:
+        shared_setup = shared_setup_values[0]
+    amortized_shared_setup = None
+    if shared_setup is not None and len(filtered_winshim_rows) > 0:
+        amortized_shared_setup = shared_setup / len(filtered_winshim_rows)
 
     ratio = "N/A"
     if baseline_total["mean"] and winshim_total["mean"] and winshim_total["mean"] > 0:
@@ -135,6 +157,14 @@ def render_report(
             + ", ".join(f"`{name}`" for name in unknown_strategy_names)
             + "."
         )
+    if shared_setup_values:
+        unique_shared_setup = {round(value, 4) for value in shared_setup_values}
+        if len(unique_shared_setup) > 1:
+            warnings.append(
+                "Inconsistent shared setup values in WinShim timing rows: "
+                + ", ".join(f"{value:.2f}" for value in sorted(unique_shared_setup))
+                + "."
+            )
 
     lines: List[str] = []
     lines.append("## WinShim v0 Benchmark Results")
@@ -145,6 +175,10 @@ def render_report(
     lines.append(
         f"- Sample count: baseline `{len(baseline_rows)}`, winshim total `{len(winshim_rows)}`, winshim used `{len(filtered_winshim_rows)}`"
     )
+    if shared_setup is not None:
+        lines.append(
+            f"- WinShim shared setup (one-time): `{shared_setup:.2f}s` | Amortized per leg: `{fmt(amortized_shared_setup)}s`"
+        )
     lines.append("")
     lines.append("### End-to-End Latency")
     lines.append("")
@@ -164,13 +198,30 @@ def render_report(
     lines.append("| Phase | Baseline (s) | WinShim (s) |")
     lines.append("|---|---:|---:|")
     lines.append(
+        f"| Shared setup (one-time) | N/A | {fmt(shared_setup)} |"
+    )
+    lines.append(
+        f"| Shared setup amortized per leg | N/A | {fmt(amortized_shared_setup)} |"
+    )
+    lines.append(
+        f"| Artifact load per leg | N/A | {fmt(winshim_artifact_load['mean'])} |"
+    )
+    lines.append(
         f"| Setup or boot | {fmt(baseline_setup['mean'])} | {fmt(winshim_boot['mean'])} |"
     )
     lines.append(
-        f"| Image load only | N/A | {fmt(winshim_image_load['mean'])} |"
+        f"| Image load only (setup job) | N/A | {fmt(winshim_image_load['mean'])} |"
     )
     lines.append(
         f"| Build execution only | {fmt(baseline_build['mean'])} | {fmt(winshim_build['mean'])} |"
+    )
+    lines.append("")
+    lines.append("### Artifact Load (WinShim Per-Leg)")
+    lines.append("")
+    lines.append("| Mean (s) | Median (s) | Std Dev (s) | Min (s) | Max (s) |")
+    lines.append("|---:|---:|---:|---:|---:|")
+    lines.append(
+        f"| {fmt(winshim_artifact_load['mean'])} | {fmt(winshim_artifact_load['median'])} | {fmt(winshim_artifact_load['stddev'])} | {fmt(winshim_artifact_load['min'])} | {fmt(winshim_artifact_load['max'])} |"
     )
 
     if warnings:
@@ -198,12 +249,23 @@ def main() -> int:
         default=5,
         help="Expected sample count per scenario",
     )
+    parser.add_argument(
+        "--shared-setup-s",
+        default="",
+        help="Optional one-time shared setup seconds for WinShim.",
+    )
     args = parser.parse_args()
 
     artifact_root = pathlib.Path(args.artifacts)
     baseline_rows = load_rows(artifact_root, "baseline")
     winshim_rows = load_rows(artifact_root, "winshim")
-    report = render_report(baseline_rows, winshim_rows, args.expected_samples)
+    shared_setup_override = parse_optional_float(args.shared_setup_s)
+    report = render_report(
+        baseline_rows,
+        winshim_rows,
+        args.expected_samples,
+        shared_setup_override,
+    )
 
     summary_file = pathlib.Path(args.summary_file)
     summary_file.parent.mkdir(parents=True, exist_ok=True)
