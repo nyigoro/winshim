@@ -34,7 +34,7 @@ env:
 jobs:
   baseline:
     name: "Baseline [${{ matrix.run_index }}]"
-    runs-on: ${{ inputs.runner_target }}
+    runs-on: ${{ fromJSON(inputs.runner_target == 'self-hosted' && '["self-hosted","windows","x64","server2022"]' || '["windows-latest"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +112,7 @@ jobs:
 
   persistence_probe:
     name: Persistence Probe
-    runs-on: ${{ inputs.runner_target }}
+    runs-on: ${{ fromJSON(inputs.runner_target == 'self-hosted' && '["self-hosted","windows","x64","server2022"]' || '["windows-latest"]') }}
     outputs:
       hit: ${{ steps.probe.outputs.hit }}
       image_id: ${{ steps.probe.outputs.image_id }}
@@ -167,7 +167,7 @@ jobs:
 
   winshim_setup:
     name: WinShim Setup
-    runs-on: ${{ inputs.runner_target }}
+    runs-on: ${{ fromJSON(inputs.runner_target == 'self-hosted' && '["self-hosted","windows","x64","server2022"]' || '["windows-latest"]') }}
     needs: [baseline, persistence_probe]
     outputs:
       tar_artifact_name: ${{ steps.artifact_meta.outputs.artifact_name }}
@@ -313,7 +313,7 @@ jobs:
 
   winshim_matrix:
     name: "WinShim [${{ matrix.run_index }}]"
-    runs-on: ${{ inputs.runner_target }}
+    runs-on: ${{ fromJSON(inputs.runner_target == 'self-hosted' && '["self-hosted","windows","x64","server2022"]' || '["windows-latest"]') }}
     needs: winshim_setup
     strategy:
       fail-fast: false
@@ -530,7 +530,7 @@ jobs:
 
   summary:
     name: Benchmark Summary
-    runs-on: ${{ inputs.runner_target }}
+    runs-on: ${{ fromJSON(inputs.runner_target == 'self-hosted' && '["self-hosted","windows","x64","server2022"]' || '["windows-latest"]') }}
     needs: [baseline, persistence_probe, winshim_setup, winshim_matrix]
     if: always()
 
