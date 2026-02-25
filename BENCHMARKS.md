@@ -36,6 +36,21 @@ Canonical benchmark record for WinShim.
 |---|---|---|---:|---:|---:|
 | `v0-warm-baseline` | `warm` | `11.65, 12.40, 13.06, 13.50, 17.43` | 13.61 | 11.65 | 17.43 |
 
+## Proof of Statelessness (Day 1)
+
+Day-1 persistence experiment used five hosted runs with explicit labels. Each run recorded a cross-run probe result and per-leg load-method breakdown.
+
+| Date (UTC) | Run URL | Run Label | Cross-run Probe | Matrix Load Method Breakdown |
+|---|---|---|---|---|
+| 2026-02-25 | [Run 19](https://github.com/nyigoro/winshim/actions/runs/22384336053) | `v0-persistence-day1-r01` | `MISS` | `artifact-load: 5/5` |
+| 2026-02-25 | [Run 20](https://github.com/nyigoro/winshim/actions/runs/22384873713) | `v0-persistence-day1-r02` | `MISS` | `artifact-load: 5/5` |
+| 2026-02-25 | [Run 21](https://github.com/nyigoro/winshim/actions/runs/22384895456) | `v0-persistence-day1-r03` | `MISS` | `artifact-load: 5/5` |
+| 2026-02-25 | [Run 22](https://github.com/nyigoro/winshim/actions/runs/22384987981) | `v0-persistence-day1-r04` | `MISS` | `artifact-load: 5/5` |
+| 2026-02-25 | [Run 23](https://github.com/nyigoro/winshim/actions/runs/22385089525) | `v0-persistence-day1-r05` | `MISS` | `artifact-load: 5/5` |
+
+- Day-1 miss count: `30/30` decisions (`5` cross-run probes + `25` matrix-leg load decisions).
+- Day-1 daemon-persistence hits: `0/30`.
+
 ## Bottleneck Interpretation (v0)
 
 WinShim v0 is currently net slower end-to-end on this workload because image load dominates total runtime.
