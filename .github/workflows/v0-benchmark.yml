@@ -108,11 +108,11 @@ jobs:
     needs: baseline
     outputs:
       tar_artifact_name: ${{ steps.artifact_meta.outputs.artifact_name }}
-      image_digest: ${{ steps.capture_identity.outputs.image_digest }}
-      image_id: ${{ steps.capture_identity.outputs.image_id }}
-      image_tag: ${{ steps.tag_preload.outputs.image_tag }}
-      load_source: ${{ steps.image_load.outputs.load_source }}
-      load_duration_s: ${{ steps.image_load.outputs.image_load_s }}
+      image_digest: ${{ steps.load.outputs.image_digest }}
+      image_id: ${{ steps.load.outputs.image_id }}
+      image_tag: ${{ steps.load.outputs.image_tag }}
+      load_source: ${{ steps.load.outputs.load_source }}
+      load_duration_s: ${{ steps.load.outputs.image_load_s }}
       prep_total_s: ${{ steps.prep_total.outputs.prep_total_s }}
 
     steps:
@@ -148,90 +148,47 @@ jobs:
           $start = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           "prep_start_ms=$start" >> $env:GITHUB_OUTPUT
 
-      - name: Restore Nano layer cache
-        id: cache_restore
-        if: ${{ inputs.cache_state == 'warm' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}\nano-layers
-          key: ${{ env.CACHE_KEY_BASE }}-${{ runner.os }}
-
-      - name: Load or pull Nano image
-        id: image_load
+      - name: Pull, tag, and capture image identity
+        id: load
         shell: pwsh
         run: |
-          ./scripts/benchmark/image-load.ps1 `
-            -Image "${{ env.NANO_IMAGE }}" `
-            -CacheState "${{ inputs.cache_state }}" `
-            -CacheHit "${{ steps.cache_restore.outputs.cache-hit }}" `
-            -LayerTarPath "$env:RUNNER_TEMP\nano-layers\nano.tar"
+          $loadStartMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+          docker pull $env:NANO_IMAGE
+          if ($LASTEXITCODE -ne 0) {
+            throw "docker pull failed for image: $env:NANO_IMAGE"
+          }
+          $loadEndMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
-      - name: Save Nano layer cache
-        if: ${{ steps.image_load.outputs.should_save_cache == 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}\nano-layers
-          key: ${{ env.CACHE_KEY_BASE }}-${{ runner.os }}
-
-      - name: Warn on degraded cache extraction
-        shell: pwsh
-        run: |
-          $source = "${{ steps.image_load.outputs.load_source }}"
-          $loadS = [double]"${{ steps.image_load.outputs.image_load_s }}"
-
-          if ($source -eq "cache" -and $loadS -gt 15) {
-            Write-Host "::warning::WinShim performance degraded: cache extraction took ${loadS}s (>15s threshold)."
-          } else {
-            Write-Host "Image source: $source, load time: ${loadS}s"
+          docker tag $env:NANO_IMAGE "winshim-nano:preload"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to tag image as winshim-nano:preload"
           }
 
-      - name: Capture image identity
-        id: capture_identity
-        shell: pwsh
-        run: |
-          $imageId = docker images -q "${{ env.NANO_IMAGE }}"
+          $imageId = docker images -q "winshim-nano:preload"
           if ([string]::IsNullOrWhiteSpace($imageId)) {
-            $imageId = docker images --format "{{.ID}} {{.Repository}}:{{.Tag}}" `
-              | Where-Object { $_ -like "*mcr.microsoft.com/windows/nanoserver*" } `
-              | ForEach-Object { ($_ -split " ")[0] } `
-              | Select-Object -First 1
-          }
-
-          if ([string]::IsNullOrWhiteSpace($imageId)) {
-            throw "Image not found in daemon after load. docker images output:`n$(docker images)"
-          }
-
-          $imageTag = docker images --format "{{.Repository}}:{{.Tag}}" --filter "id=$imageId" | Select-Object -First 1
-          if ([string]::IsNullOrWhiteSpace($imageTag)) {
-            $imageTag = "${{ env.NANO_IMAGE }}"
+            throw "Image not found in daemon after pull and tag. Pull may have failed silently."
           }
 
           $imageDigest = ""
-          if ("${{ env.NANO_IMAGE }}" -match "@") {
-            $imageDigest = "${{ env.NANO_IMAGE }}".Split("@")[1]
+          if ($env:NANO_IMAGE -match "@") {
+            $imageDigest = $env:NANO_IMAGE.Split("@")[1]
           }
+
+          $loadS = [math]::Round(($loadEndMs - $loadStartMs) / 1000, 2)
+          $loadText = $loadS.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
 
           "image_id=$imageId" >> $env:GITHUB_OUTPUT
-          "image_tag=$imageTag" >> $env:GITHUB_OUTPUT
+          "image_tag=winshim-nano:preload" >> $env:GITHUB_OUTPUT
           "image_digest=$imageDigest" >> $env:GITHUB_OUTPUT
-          Write-Host "Image identity captured: $imageTag ($imageId)"
-
-      - name: Tag image for preload archive
-        id: tag_preload
-        shell: pwsh
-        run: |
-          $preloadTag = "winshim-nano:preload"
-          docker tag "${{ steps.capture_identity.outputs.image_id }}" $preloadTag
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to tag image for preload export: $preloadTag"
-          }
-          "image_tag=$preloadTag" >> $env:GITHUB_OUTPUT
-          Write-Host "Using preload image tag: $preloadTag"
+          "load_source=registry" >> $env:GITHUB_OUTPUT
+          "image_load_s=$loadText" >> $env:GITHUB_OUTPUT
+          Write-Host "Identity captured: winshim-nano:preload ($imageId)"
+          Write-Host "Image source: registry, load time: ${loadText}s"
 
       - name: Smoke test image
         shell: pwsh
         run: |
-          docker run --rm --isolation=process "${{ steps.tag_preload.outputs.image_tag }}" cmd /c "echo ok"
+          docker run --rm --isolation=process "winshim-nano:preload" cmd /c "echo ok"
           if ($LASTEXITCODE -ne 0) {
             throw "Image smoke test failed."
           }
@@ -248,9 +205,9 @@ jobs:
             Remove-Item -Path $tarPath -Force
           }
 
-          docker save "${{ steps.tag_preload.outputs.image_tag }}" -o $tarPath
+          docker save "winshim-nano:preload" -o $tarPath
           if ($LASTEXITCODE -ne 0) {
-            throw "docker save failed for image: ${{ steps.tag_preload.outputs.image_tag }}"
+            throw "docker save failed for image: winshim-nano:preload"
           }
 
           if (-not (Test-Path $tarPath)) {
@@ -332,13 +289,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.winshim_setup.outputs.tar_artifact_name }}
-          path: ${{ runner.temp }}\nano-preload
+          path: ${{ runner.temp }}
 
       - name: Load image from artifact
         id: artifact_load
         shell: pwsh
         run: |
-          $tarPath = Join-Path $env:RUNNER_TEMP "nano-preload\nano-preload.tar"
+          $tarPath = Join-Path $env:RUNNER_TEMP "nano-preload.tar"
           if (-not (Test-Path $tarPath)) {
             throw "Missing preloaded image tar: $tarPath"
           }
@@ -346,7 +303,7 @@ jobs:
           $startMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           $loadOutput = docker load -i $tarPath 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "docker load failed from artifact: $tarPath`n$($loadOutput -join \"`n\")"
+            throw "docker load failed from artifact: $tarPath`n$($loadOutput -join "`n")"
           }
           $endMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
@@ -357,27 +314,29 @@ jobs:
           Write-Host "Artifact image load seconds: $loadText"
 
       - name: Verify loaded image identity
+        id: verify_loaded
         shell: pwsh
         run: |
-          $imageTag = "${{ needs.winshim_setup.outputs.image_tag }}"
-          $localImageId = docker images -q $imageTag
+          $targetTag = "winshim-nano:preload"
+          $localImageId = docker images -q $targetTag
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($localImageId)) {
-            throw "Image '$imageTag' not found in local daemon after artifact load."
+            throw "Image '$targetTag' not found after artifact load. Artifact may be corrupt."
           }
 
           $expectedImageId = "${{ needs.winshim_setup.outputs.image_id }}"
-          if ($localImageId -ne $expectedImageId -and -not $localImageId.StartsWith($expectedImageId) -and -not $expectedImageId.StartsWith($localImageId)) {
+          if ($localImageId -ne $expectedImageId) {
             throw "Image ID mismatch after artifact load. Expected: $expectedImageId Got: $localImageId"
           }
 
-          Write-Host "Image verified locally: $imageTag ($localImageId)"
+          "image_tag=$targetTag" >> $env:GITHUB_OUTPUT
+          Write-Host "WinShim subsystem ready - Tag: $targetTag | ID: $localImageId"
 
       - name: Manifest validator canary
         id: manifest_probe
         shell: pwsh
         run: |
           ./scripts/benchmark/manifest-probe.ps1 `
-            -Image "${{ needs.winshim_setup.outputs.image_tag }}" `
+            -Image "${{ steps.verify_loaded.outputs.image_tag }}" `
             -ProbeRootPath "${{ github.workspace }}"
 
       - name: Locate host .NET root
@@ -399,7 +358,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/benchmark/run-winshim-workload.ps1 `
-            -Image "${{ needs.winshim_setup.outputs.image_tag }}" `
+            -Image "${{ steps.verify_loaded.outputs.image_tag }}" `
             -StrategyMode "${{ steps.manifest_probe.outputs.strategy_mode }}" `
             -DotnetRoot "${{ steps.host_dotnet.outputs.dotnet_root }}" `
             -WorkspacePath "${{ github.workspace }}" `
