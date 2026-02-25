@@ -16,6 +16,14 @@ on:
         description: "Label shown in the benchmark report"
         required: false
         default: manual
+      image_bootstrap_mode:
+        description: "How WinShim image availability is handled"
+        required: true
+        type: choice
+        default: per-leg
+        options:
+          - per-leg
+          - preload-experimental
 
 env:
   DOTNET_VERSION: "8.0.x"
@@ -24,9 +32,81 @@ env:
   CACHE_KEY_BASE: "winshim-nano-layers-ltsc2022-sha42f7526e855c"
 
 jobs:
+  preload_image:
+    name: Preload Image
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure Docker daemon is ready
+        shell: pwsh
+        run: |
+          $service = Get-Service -Name docker -ErrorAction Stop
+          if ($service.Status -ne "Running") {
+            Write-Host "Docker service status: $($service.Status). Starting service."
+            Start-Service docker
+          }
+
+          $ready = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            docker version 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              $ready = $true
+              break
+            }
+            Start-Sleep -Seconds 5
+          }
+
+          if (-not $ready) {
+            throw "Docker daemon is unavailable on this runner."
+          }
+
+      - name: Skip pre-load in per-leg mode
+        if: ${{ inputs.image_bootstrap_mode == 'per-leg' }}
+        shell: pwsh
+        run: |
+          Write-Host "Image bootstrap mode is per-leg. Pre-load job is a no-op."
+
+      - name: Restore Nano layer cache for pre-load
+        id: preload_cache_restore
+        if: ${{ inputs.image_bootstrap_mode == 'preload-experimental' && inputs.cache_state == 'warm' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}\nano-layers
+          key: ${{ env.CACHE_KEY_BASE }}-${{ runner.os }}
+
+      - name: Pre-load Nano image
+        id: preload_image
+        if: ${{ inputs.image_bootstrap_mode == 'preload-experimental' }}
+        shell: pwsh
+        run: |
+          ./scripts/benchmark/image-load.ps1 `
+            -Image "${{ env.NANO_IMAGE }}" `
+            -CacheState "${{ inputs.cache_state }}" `
+            -CacheHit "${{ steps.preload_cache_restore.outputs.cache-hit }}" `
+            -LayerTarPath "$env:RUNNER_TEMP\nano-layers\nano.tar"
+
+      - name: Save Nano layer cache from pre-load
+        if: ${{ inputs.image_bootstrap_mode == 'preload-experimental' && steps.preload_image.outputs.should_save_cache == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\nano-layers
+          key: ${{ env.CACHE_KEY_BASE }}-${{ runner.os }}
+
+      - name: Smoke test pre-loaded image
+        if: ${{ inputs.image_bootstrap_mode == 'preload-experimental' }}
+        shell: pwsh
+        run: |
+          docker run --rm --isolation=process "${{ env.NANO_IMAGE }}" cmd /c "ver >nul"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Image pre-load smoke test failed."
+          }
+
   baseline:
     name: "Baseline [${{ matrix.run_index }}]"
     runs-on: windows-latest
+    needs: preload_image
     strategy:
       fail-fast: false
       matrix:
@@ -148,9 +228,19 @@ jobs:
           $start = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
           "start_ms=$start" >> $env:GITHUB_OUTPUT
 
+      - name: Confirm pre-loaded image availability
+        if: ${{ inputs.image_bootstrap_mode == 'preload-experimental' }}
+        shell: pwsh
+        run: |
+          docker images --digests "${{ env.NANO_IMAGE }}"
+          docker image inspect "${{ env.NANO_IMAGE }}" >$null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pre-loaded image is not available on this runner."
+          }
+
       - name: Restore Nano layer cache
         id: cache_restore
-        if: ${{ inputs.cache_state == 'warm' }}
+        if: ${{ inputs.image_bootstrap_mode == 'per-leg' && inputs.cache_state == 'warm' }}
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\nano-layers
@@ -158,6 +248,7 @@ jobs:
 
       - name: Load or pull Nano image
         id: image_load
+        if: ${{ inputs.image_bootstrap_mode == 'per-leg' }}
         shell: pwsh
         run: |
           ./scripts/benchmark/image-load.ps1 `
@@ -167,13 +258,14 @@ jobs:
             -LayerTarPath "$env:RUNNER_TEMP\nano-layers\nano.tar"
 
       - name: Save Nano layer cache
-        if: ${{ steps.image_load.outputs.should_save_cache == 'true' }}
+        if: ${{ inputs.image_bootstrap_mode == 'per-leg' && steps.image_load.outputs.should_save_cache == 'true' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}\nano-layers
           key: ${{ env.CACHE_KEY_BASE }}-${{ runner.os }}
 
       - name: Warn on degraded cache extraction
+        if: ${{ inputs.image_bootstrap_mode == 'per-leg' }}
         shell: pwsh
         run: |
           $source = "${{ steps.image_load.outputs.load_source }}"
